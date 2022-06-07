@@ -113,7 +113,7 @@ void stm32mp_register_online_cpu(void)
 			stm32_pm_cpu_power_down_wfi();
 			panic();
 		}
-		stm32_clock_disable(RTCAPB);
+		clk_disable(stm32mp_rcc_clock_id_to_clk(RTCAPB));
 	}
 
 	core_state[pos] = CORE_ON;
@@ -207,7 +207,8 @@ int psci_cpu_off(void)
 	unlock_state_access(exceptions);
 
 	/* Enable BKPREG access for the disabled CPU */
-	stm32_clock_enable(RTCAPB);
+	if (clk_enable(stm32mp_rcc_clock_id_to_clk(RTCAPB)))
+		panic();
 
 	thread_mask_exceptions(THREAD_EXCP_ALL);
 	stm32_pm_cpu_power_down_wfi();
