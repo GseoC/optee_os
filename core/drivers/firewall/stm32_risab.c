@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <string_ext.h>
 #include <stm32_sysconf.h>
+#include <util.h>
 
 #define _RISAB_CR				U(0x0)
 #define _RISAB_IASR				U(0x8)
@@ -232,8 +233,7 @@ static void set_read_conf(struct stm32_risab_pdata *risab_d,
 
 	for (i = 0; i < _RISAB_NB_MAX_CID_SUPPORTED; i++) {
 		if (subr_cfg->rlist[i])
-			io_clrsetbits32(base + _RISAB_CIDxRDCFGR(i), mask,
-					mask);
+			io_setbits32(base + _RISAB_CIDxRDCFGR(i), mask);
 	}
 }
 
@@ -248,8 +248,7 @@ static void set_write_conf(struct stm32_risab_pdata *risab_d,
 
 	for (i = 0; i < _RISAB_NB_MAX_CID_SUPPORTED; i++) {
 		if (subr_cfg->wlist[i])
-			io_clrsetbits32(base + _RISAB_CIDxWRCFGR(i), mask,
-					mask);
+			io_setbits32(base + _RISAB_CIDxWRCFGR(i), mask);
 	}
 }
 
