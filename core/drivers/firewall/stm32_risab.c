@@ -66,10 +66,10 @@
 
 /* Miscellaneous */
 #define _RISAB_NB_PAGES_MAX			U(32)
-
 #define _RISAB_PAGE_SIZE			U(0x1000)
-
 #define _RISAB_NB_MAX_CID_SUPPORTED		U(7)
+
+#define RISAB_NAME_LEN_MAX			U(20)
 
 struct mem_region {
 	paddr_t base;
@@ -94,7 +94,7 @@ struct stm32_risab_pdata {
 	struct stm32_risab_rif_conf *subr_cfg;
 	struct io_pa_va base;
 	unsigned int conf_lock;
-	char risab_name[20];
+	char risab_name[RISAB_NAME_LEN_MAX];
 	uint32_t pages_configured;
 	bool srwiad;
 
@@ -338,8 +338,6 @@ static void parse_risab_rif_conf(struct stm32_risab_pdata *risab_d,
 
 	assert(last_page <= _RISAB_NB_PAGES_MAX);
 
-	subr_cfg->first_page = first_page;
-
 	DMSG("Configuring pages %u to %u", first_page, last_page);
 
 	/* Parse secure configuration */
@@ -373,28 +371,16 @@ static void parse_risab_rif_conf(struct stm32_risab_pdata *risab_d,
 
 	for (i = 0; i < _RISAB_NB_MAX_CID_SUPPORTED; i++) {
 		/* RISAB compartment priv configuration */
-		if (rif_conf & BIT(i)) {
-			subr_cfg->plist[i] |=
-			GENMASK_32(first_page +
-				   subr_cfg->nb_pages_cfged - 1,
-				   first_page);
-		}
+		if (rif_conf & BIT(i))
+			subr_cfg->plist[i] |= GENMASK_32(last_page, first_page);
 
 		/* RISAB compartment read configuration */
-		if (rif_conf & BIT(i + RISAB_READ_LIST_SHIFT)) {
-			subr_cfg->rlist[i] |=
-			GENMASK_32(first_page +
-				   subr_cfg->nb_pages_cfged - 1,
-				   first_page);
-		}
+		if (rif_conf & BIT(i + RISAB_READ_LIST_SHIFT))
+			subr_cfg->rlist[i] |= GENMASK_32(last_page, first_page);
 
 		/* RISAB compartment write configuration */
-		if (rif_conf & BIT(i + RISAB_WRITE_LIST_SHIFT)) {
-			subr_cfg->wlist[i] |=
-			GENMASK_32(first_page +
-				   subr_cfg->nb_pages_cfged - 1,
-				   first_page);
-		}
+		if (rif_conf & BIT(i + RISAB_WRITE_LIST_SHIFT))
+			subr_cfg->wlist[i] |= GENMASK_32(last_page, first_page);
 	}
 
 	/* CID filtering configuration */
@@ -469,12 +455,12 @@ static TEE_Result parse_dt(const void *fdt, int node,
 		return TEE_ERROR_OUT_OF_MEMORY;
 
 	for (i = 0; i < risab_d->nb_regions_cfged; i++) {
-		uintptr_t sub_region_offset = 0;
-		uintptr_t address = 0;
+		uint32_t phandle = fdt32_to_cpu(mem_regions[i]);
+		size_t sub_region_offset = 0;
+		paddr_t address = 0;
 		size_t length = 0;
 
-		mem_reg_node =
-		fdt_node_offset_by_phandle(fdt, fdt32_to_cpu(mem_regions[i]));
+		mem_reg_node = fdt_node_offset_by_phandle(fdt, phandle);
 		if (mem_reg_node < 0)
 			return TEE_ERROR_ITEM_NOT_FOUND;
 
@@ -482,7 +468,7 @@ static TEE_Result parse_dt(const void *fdt, int node,
 		 * Get the reg property to determine the number of pages
 		 * to configure
 		 */
-		address = (uintptr_t)fdt_reg_base_address(fdt, mem_reg_node);
+		address = fdt_reg_base_address(fdt, mem_reg_node);
 		length = fdt_reg_size(fdt, mem_reg_node);
 
 		assert(IS_ALIGNED(address, _RISAB_PAGE_SIZE) &&
@@ -498,7 +484,9 @@ static TEE_Result parse_dt(const void *fdt, int node,
 					   risab_d->region_cfged.base,
 					   risab_d->region_cfged.size)) {
 			EMSG("Region %#"PRIxPA"..%#"PRIxPA" outside RISAB area %#"PRIxPA"...%#"PRIxPA,
-			     address, length, risab_d->region_cfged.base,
+			     address, address + length,
+			     risab_d->region_cfged.base,
+			     risab_d->region_cfged.base +
 			     risab_d->region_cfged.size);
 			return TEE_ERROR_BAD_PARAMETERS;
 		}
@@ -538,7 +526,7 @@ static void disable_srwiad_if_unset(struct stm32_risab_pdata *risab_d)
 		io_clrbits32(risab_base(risab_d), _RISAB_CR_SRWIAD);
 };
 
-static void clean_iac_regs(struct stm32_risab_pdata *risab_d)
+static void clear_iac_regs(struct stm32_risab_pdata *risab_d)
 {
 	io_setbits32(risab_base(risab_d) + _RISAB_IACR, GENMASK_32(1, 0));
 }
@@ -579,7 +567,6 @@ static TEE_Result stm32_risab_check_access(struct firewall_query *fw,
 					   bool read, bool write)
 {
 	struct stm32_risab_rif_conf *reg_conf = NULL;
-	TEE_Result res = TEE_ERROR_ACCESS_DENIED;
 	struct stm32_risab_pdata *risab = NULL;
 	unsigned int first_page = 0;
 	uint32_t write_cids = 0;
@@ -599,7 +586,7 @@ static TEE_Result stm32_risab_check_access(struct firewall_query *fw,
 
 	if (!IS_ALIGNED(paddr, _RISAB_PAGE_SIZE) ||
 	    !IS_ALIGNED(size, _RISAB_PAGE_SIZE)) {
-		EMSG("Physical ddress %"PRIxPA" or size:%#zx misaligned with RISAB page boundaries",
+		EMSG("Physical address %"PRIxPA" or size:%#zx misaligned with RISAB page boundaries",
 		     paddr, size);
 		return TEE_ERROR_BAD_PARAMETERS;
 	}
@@ -624,24 +611,18 @@ static TEE_Result stm32_risab_check_access(struct firewall_query *fw,
 	/* Security level is exclusive on memories */
 	if (!!(q_conf & BIT(RISAB_SEC_SHIFT)) ^ !!(seccfgr & BIT(first_page))) {
 		if (!(q_conf & BIT(RISAB_SEC_SHIFT) &&
-		      (io_read32(base + _RISAB_CR) & _RISAB_CR_SRWIAD))) {
-			res = TEE_ERROR_ACCESS_DENIED;
-			goto out;
-		}
+		      (io_read32(base + _RISAB_CR) & _RISAB_CR_SRWIAD)))
+			return TEE_ERROR_ACCESS_DENIED;
 	}
 
 	dprivcfgr = io_read32(base + _RISAB_PGy_PRIVCFGR(first_page));
 	cidcfgr = io_read32(base + _RISAB_PGy_CIDCFGR(first_page));
 
 	if (!(cidcfgr & _RISAB_PG_CIDCFGR_CFEN)) {
-		if (dprivcfgr && !(q_conf & BIT(RISAB_DPRIV_SHIFT))) {
-			res = TEE_ERROR_ACCESS_DENIED;
-			goto out;
-		} else {
-			/* CID filtering is not activated, can safely exit. */
-			res = TEE_SUCCESS;
-			goto out;
-		}
+		if (dprivcfgr && !(q_conf & BIT(RISAB_DPRIV_SHIFT)))
+			return TEE_ERROR_ACCESS_DENIED;
+		else
+			return TEE_SUCCESS;
 	}
 
 	read_cids = SHIFT_U32(q_conf & RISAB_RLIST_MASK, RISAB_READ_LIST_SHIFT);
@@ -655,39 +636,28 @@ static TEE_Result stm32_risab_check_access(struct firewall_query *fw,
 		uint32_t priv_list = io_read32(base + _RISAB_CIDxPRIVCFGR(i));
 
 		if (read && (read_cids & BIT(i)) &&
-		    !(read_list & BIT(first_page))) {
-			res = TEE_ERROR_ACCESS_DENIED;
-			goto out;
-		}
+		    !(read_list & BIT(first_page)))
+			return TEE_ERROR_ACCESS_DENIED;
 
 		if (write && (write_cids & BIT(i)) &&
-		    !(write_list & BIT(first_page))) {
-			res = TEE_ERROR_ACCESS_DENIED;
-			goto out;
-		}
+		    !(write_list & BIT(first_page)))
+			return TEE_ERROR_ACCESS_DENIED;
 
-		if ((priv_list & BIT(first_page)) && !(priv_cids & BIT(i))) {
-			res = TEE_ERROR_ACCESS_DENIED;
-			goto out;
-		}
+		if ((priv_list & BIT(first_page)) && !(priv_cids & BIT(i)))
+			return TEE_ERROR_ACCESS_DENIED;
 	}
 
-	res = TEE_SUCCESS;
-
-out:
-	return res;
+	return TEE_SUCCESS;
 }
 
 static TEE_Result stm32_risab_pm_resume(struct stm32_risab_pdata *risab)
 {
 	unsigned int i = 0;
 
-	if (is_tdcid) {
-		if (risab->base.pa == RISAB6_BASE)
-			set_vderam_syscfg(risab);
-		enable_srwiad_if_set(risab);
-		clean_iac_regs(risab);
-	}
+	if (risab->base.pa == RISAB6_BASE)
+		set_vderam_syscfg(risab);
+	enable_srwiad_if_set(risab);
+	clear_iac_regs(risab);
 
 	for (i = 0; i < risab->nb_regions_cfged; i++) {
 		/* Restoring RISAB RIF configuration */
@@ -795,7 +765,7 @@ static TEE_Result stm32_risab_probe(const void *fdt, int node,
 	if (is_tdcid) {
 		if (risab_d->base.pa == RISAB6_BASE)
 			set_vderam_syscfg(risab_d);
-		clean_iac_regs(risab_d);
+		clear_iac_regs(risab_d);
 		enable_srwiad_if_set(risab_d);
 	}
 
@@ -825,6 +795,7 @@ static TEE_Result stm32_risab_probe(const void *fdt, int node,
 	return TEE_SUCCESS;
 
 err:
+	clk_disable(risab_d->clock);
 	free(risab_d->subr_cfg);
 	free(risab_d);
 
